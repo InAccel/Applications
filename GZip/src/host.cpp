@@ -169,7 +169,6 @@ void process_batch(std::string & filelist, std::string & batch, xil_gzip & gzip)
             }
             else {
                 std::cout << "Validation Failed" << gzip_dec.c_str() << std::endl;
-                gzip.release();
                 exit(1);
             }
            
@@ -185,8 +184,6 @@ void process_batch(std::string & filelist, std::string & batch, xil_gzip & gzip)
 
 int main(int argc, char *argv[])
 {
-    std::string binaryFileName = "gZip_app";
-    
     sda::utils::CmdLineParser parser;
     parser.addSwitch("--input_file",    "-i",     "Input Data File",        "");
     parser.addSwitch("--file_list",    "-l",      "\tList of Input Files",    "");
@@ -194,9 +191,7 @@ int main(int argc, char *argv[])
     parser.parse(argc, argv);
  
     // Create XGZip Object 
-    // OpenCL Initialization     
     xil_gzip gzip;
-    gzip.init(binaryFileName);
     
     std::string infile      = parser.value("input_file");   
     std::string filelist    = parser.value("file_list");   
@@ -216,7 +211,4 @@ int main(int argc, char *argv[])
         parser.printHelp();
         exit(EXIT_FAILURE);
     }
-
-    // OpenCL Release
-    gzip.release();
 }

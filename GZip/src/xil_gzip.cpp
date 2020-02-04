@@ -121,15 +121,11 @@ void xil_gzip::compress_file(std::vector<std::string> & inFile_batch,
     // Input file size holder
     std::vector<int> input_size_cntr; 
 
-    // Allocate buffer pointers based on chunk size
+    // Allocate inaccel input and output buffers based on chunk size
     // These buffer pointers hold data related to 
     // Each input file 
-    uint8_t *gzip_in[chunk_size];
-    uint8_t *gzip_out[chunk_size];
-
-    // Allocate actual aligned input and output buffers
-    std::vector<uint8_t, aligned_allocator<uint8_t>> input_vectors[chunk_size]; 
-    std::vector<uint8_t, aligned_allocator<uint8_t>> output_vectors[chunk_size]; 
+    std::vector<inaccel::vector<uint8_t>> input_vectors(chunk_size);
+    std::vector<inaccel::vector<uint8_t>> output_vectors(chunk_size);
 
     uint32_t local_enbytes[chunk_size];
     
@@ -148,17 +144,14 @@ void xil_gzip::compress_file(std::vector<std::string> & inFile_batch,
         input_size_cntr.push_back(input_size);
    
         input_vectors[i].reserve(input_size_cntr[i]);
-        output_vectors[i].reserve(2 * input_size_cntr[i]);
+        output_vectors[i].resize(input_size_cntr[i]);
         inFile.read((char *)input_vectors[i].data(), input_size_cntr[i]);
 
-        // Assign data to buffer pointers
-        gzip_in[i]  = input_vectors[i].data();
-        gzip_out[i] = output_vectors[i].data();
         inFile.close();
     }
 
     // GZip batch mode compress
-    compress(gzip_in, gzip_out, input_size_cntr, local_enbytes);
+    compress(input_vectors, output_vectors, input_size_cntr, local_enbytes);
 
     
     // Fill the .gz buffer with encoded stream
@@ -189,13 +182,13 @@ uint32_t xil_gzip::compress_file(std::string & inFile_name, std::string & outFil
     long input_size = inFile.tellg();
     inFile.seekg(0, inFile.beg);   
     
-    std::vector<uint8_t,aligned_allocator<uint8_t>> gzip_in (input_size);
-    std::vector<uint8_t,aligned_allocator<uint8_t>> gzip_out(input_size * 2);
+    inaccel::vector<uint8_t> gzip_in (input_size);
+    inaccel::vector<uint8_t> gzip_out(input_size);
     
     inFile.read((char *)gzip_in.data(), input_size); 
 
     // GZip Compress 
-    uint32_t enbytes = compress(gzip_in.data(), gzip_out.data(), input_size);
+    uint32_t enbytes = compress(gzip_in, gzip_out, input_size);
 
     // Pack GZip encoded stream .gz file
     zip(inFile_name, outFile, gzip_out.data(), enbytes);
@@ -219,94 +212,9 @@ int validate(std::string & inFile_name, std::string & outFile_name) {
 }
 
 
-int xil_gzip::init(const std::string& binaryFileName)
-{
-    // The get_xil_devices will return vector of Xilinx Devices 
-    std::vector<cl::Device> devices = xcl::get_xil_devices();
-    cl::Device device = devices[0];
-
-    //Creating Context and Command Queue for selected Device 
-    m_context = new cl::Context(device);
-    m_q = new cl::CommandQueue(*m_context, device, 
-            CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE | CL_QUEUE_PROFILING_ENABLE);
-    std::string device_name = device.getInfo<CL_DEVICE_NAME>(); 
-    std::cout << "Found Device=" << device_name.c_str() << std::endl;
-
-    // import_binary() command will find the OpenCL binary file created using the 
-    // xocc compiler load into OpenCL Binary and return as Binaries
-    // OpenCL and it can contain many functions which can be executed on the
-    // device.
-    std::string binaryFile = xcl::find_binary_file(device_name,binaryFileName.c_str());
-    cl::Program::Binaries bins = xcl::import_binary_file(binaryFile);
-    devices.resize(1);
-    m_program = new cl::Program(*m_context, devices, bins);
-    local_out = new std::vector<uint8_t,aligned_allocator<uint8_t>>(2*MAX_INPUT_SIZE);
-    long round_off = MAX_INPUT_SIZE/ VEC;
-    round_off = round_off * VEC;
-    long size_for_each_unit = round_off;
-    int inputSizeInKB = (size_for_each_unit-1) / BLOCK_PARITION + 1;
-    sizeOut = new std::vector<uint32_t,aligned_allocator<uint32_t>>(2*inputSizeInKB);
-
-    // Batch mode buffer allocate
-    for(int i = 0; i < 2; i++) {
-        batch_sizeOut[i] = new std::vector<uint32_t, aligned_allocator<uint32_t>>(2 * inputSizeInKB);
-        batch_local_out[i] = new std::vector<uint8_t, aligned_allocator<uint8_t>>(2 * MAX_INPUT_SIZE);
-    }
-    
-    // Various Kernel Names
-    std::string kernel_names = "gZip_cu";
-    
-    // Create kernels based on compute unit count
-    kernel_gzip = new cl::Kernel(*m_program, (kernel_names.c_str()));    
-
-    return 0;
-}
-
-int xil_gzip::release()
-{
-    delete(m_q);
-    delete(m_program);
-    delete(m_context);
-    delete(local_out);
-    delete(sizeOut);
-    
-    delete(kernel_gzip);    
-
-    // Release local and sizeOut buffers
-    for(int i = 0; i < batch_buf_release; i++) {
-        delete (batch_sizeOut[i]);
-        delete (batch_local_out[i]);
-    }
-
-    // Release cl buffers
-    for(int i = 0; i < batch_buf_release; i++) {
-        delete (batch_buffer_input[i]);
-        delete (batch_buffer_output[i]);
-        delete (batch_buffer_size[i]); 
-    }
-
-    return 0;
-}
-
-cl_mem_ext_ptr_t xil_gzip::get_buffer_extension(int ddr_no)
-{
-    cl_mem_ext_ptr_t ext;
-    switch(ddr_no){
-        case 0: 
-            ext.flags = XCL_MEM_DDR_BANK0; break;
-        case 1:
-            ext.flags = XCL_MEM_DDR_BANK1; break;
-        case 2:
-            ext.flags = XCL_MEM_DDR_BANK2; break;
-        default:
-            ext.flags = XCL_MEM_DDR_BANK3; 
-    };
-    return ext;
-}
-
 // GZip Compress (Batch of Files) using -l <file.list> -b <size of batch>
-void xil_gzip::compress(uint8_t *in[],
-                        uint8_t *out[],
+void xil_gzip::compress(std::vector<inaccel::vector<uint8_t>> & in,
+                        std::vector<inaccel::vector<uint8_t>> & out,
                         std::vector<int> & input_size,
                         uint32_t *file_encode_bytes 
                        ) {
@@ -315,128 +223,30 @@ void xil_gzip::compress(uint8_t *in[],
     // Figure out the total files sent in batch mode
     int total_file_count = input_size.size();
 
-    cl_mem_ext_ptr_t in_ext[2];
-    cl_mem_ext_ptr_t out_ext[2];
-    cl_mem_ext_ptr_t sizeExt[2];
+    inaccel::vector<uint32_t> sizeOut[total_file_count];
 
-    // Read, Write, Kernel Events
-    cl::Event kernel_events[2];
-    cl::Event read_events[2];
-    cl::Event write_events[2];
-
-
-    bool file_flags[total_file_count];
+    std::vector<inaccel::session> sessions;
 
     // Main loop for overlap computation
     for(int file = 0; file < total_file_count; file++) {
 
         long insize = (long) input_size[file];
 
-        int flag = file % 2;
-        
-        file_flags[file] = flag;
+        sizeOut[file].resize(1);
 
-        if(file >= 2) {
-        
-            read_events[flag].wait();
-            uint8_t *dst = out[file - 2];
-            size_t out_cntr = (batch_sizeOut[flag]->data())[0];
-            uint8_t *src = batch_local_out[flag]->data();
-            file_encode_bytes[file - 2] = out_cntr;
-            std::memcpy(dst, src, out_cntr);
-
-            delete (batch_buffer_input[flag]);
-            delete (batch_buffer_output[flag]);
-            delete (batch_buffer_size[flag]);
-        }
-
-        long inbuf_size = input_size[file] * sizeof(uint8_t);
-        long outbuf_size = 2 * input_size[file] * sizeof(uint8_t);
-
-        uint8_t *in_ptr = in[file];
-        in_ext[flag].flags = XCL_MEM_DDR_BANK0;
-        in_ext[flag].obj = &in_ptr[0];
-        in_ext[flag].param = NULL;
-
-        out_ext[flag].flags = XCL_MEM_DDR_BANK1;
-        out_ext[flag].obj   = batch_local_out[flag]->data();
-        out_ext[flag].param = NULL;
-
-        sizeExt[flag].flags = XCL_MEM_DDR_BANK1;
-        sizeExt[flag].obj = batch_sizeOut[flag]->data();
-        sizeExt[flag].param = NULL;
-
-        // Device buffer allocation
-        batch_buffer_input[flag]     = new cl::Buffer(*m_context, 
-                CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,  
-                inbuf_size, &in_ext[flag]);
-        
-        batch_buffer_output[flag]    = new cl::Buffer(*m_context, 
-                CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX, 
-                outbuf_size,&out_ext[flag]);
-        
-        batch_buffer_size[flag]      = new cl::Buffer(*m_context, 
-                CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX, 
-                sizeof(uint32_t) , &sizeExt[flag]);
-        
-        // Kernel write and compute events local
-        std::vector<cl::Event> kernelWriteWait;
-        std::vector<cl::Event> kernelComputeWait;
-
-        // Vector of memory objects
-        std::vector<cl::Memory> inBufVec;
-        inBufVec.push_back(*(batch_buffer_input[flag]));
-
-        // Migrate memory - Map host to device buffers   
-        m_q->enqueueMigrateMemObjects(inBufVec,
-                                      0,/* 0 means from host*/
-                                      NULL,
-                                      &write_events[flag]
-                                      );
-        
         // Set kernel arguments
-        int narg = 0;
-        (kernel_gzip)->setArg(narg++, *(batch_buffer_input[flag]));
-        (kernel_gzip)->setArg(narg++, *(batch_buffer_output[flag]));
-        (kernel_gzip)->setArg(narg++, *(batch_buffer_size[flag]));
-        (kernel_gzip)->setArg(narg++, insize);
-        
-        kernelWriteWait.push_back(write_events[flag]);        
+        inaccel::request request{"com.xilinx.applications.GZip.compress"};
+        request.arg(in[file]).arg(out[file]).arg(sizeOut[file]).arg(insize);
         
         // Kernel invocation
-        m_q->enqueueTask(*kernel_gzip, &kernelWriteWait, &kernel_events[flag]);
-        
-        kernelComputeWait.push_back(kernel_events[flag]); 
-        
-        // Migrate Memeory - Map device to host buffers
-        std::vector<cl::Memory> outBufVec;
-        outBufVec.push_back(*(batch_buffer_output[flag]));
-        outBufVec.push_back(*(batch_buffer_size[flag]));
-        
-        // Migrate memory - Map device to host buffers
-        m_q->enqueueMigrateMemObjects(outBufVec, CL_MIGRATE_MEM_OBJECT_HOST, &kernelComputeWait, &read_events[flag]);
+        sessions.push_back(inaccel::submit(request));
 
     } // End of mail loop - Batch mode
-    m_q->flush();
-    m_q->finish();
 
-    int temp = total_file_count;
-    if(total_file_count == 1) {
-        temp = 2;
-        batch_buf_release = 1;
-    }
-    else {
-        batch_buf_release = 2;
-    }
-
-    int cntr = 0;
-    for(int i = temp - 2; i < total_file_count; i++) {
-        cntr = file_flags[i];
-        uint8_t *dst = out[i];
-        size_t out_cntr = (batch_sizeOut[cntr]->data())[0];
-        uint8_t *src = batch_local_out[cntr]->data();
-        file_encode_bytes[i] = out_cntr;
-        std::memcpy(dst, src, out_cntr);
+    for(int file = 0; file < total_file_count; file++) {
+        inaccel::wait(sessions[file]);
+        size_t out_cntr = (sizeOut[file].data())[0];
+        file_encode_bytes[file] = out_cntr;
     }
     auto total_end = std::chrono::high_resolution_clock::now(); 
     
@@ -453,8 +263,8 @@ void xil_gzip::compress(uint8_t *in[],
 }
 
 // GZip compress (Single File) using -i option
-uint32_t xil_gzip::compress(uint8_t *in, 
-                            uint8_t *out, 
+uint32_t xil_gzip::compress(inaccel::vector<uint8_t> & in,
+                            inaccel::vector<uint8_t> & out,
                             long input_size
                           ) {
 
@@ -462,127 +272,25 @@ uint32_t xil_gzip::compress(uint8_t *in,
     long size_per_unit = (input_size - 1)+ 1;
     long size_of_each_unit_4k = ((size_per_unit -1)/4096 + 1) * 4096;
     
-    // Device buffers
-    cl::Buffer* buffer_input;
-    cl::Buffer* buffer_output;
-    cl::Buffer* buffer_size;
-    
-    auto alloc_end = std::chrono::high_resolution_clock::now(); 
+    inaccel::vector<uint32_t> sizeOut(1);
     
     long size_for_each_unit =  size_of_each_unit_4k;
     if (size_for_each_unit > input_size){
         size_for_each_unit = input_size;
     }
-   
-    long inbuf_start    = 0;
-    long outbuf_start   = 0;
-    long inbuf_size     = size_for_each_unit * sizeof(uint8_t);
-    long outbuf_size    = 2*size_for_each_unit * sizeof(uint8_t);
-
-    // OpenCL device buffer extension mapping   
-    cl_mem_ext_ptr_t    inExt,outExt,sizeExt;
-    inExt   = get_buffer_extension(0); inExt.obj    = &in[inbuf_start]; inExt.param = NULL;
-    outExt  = get_buffer_extension(1); outExt.obj   = local_out->data() + outbuf_start; outExt.param = NULL;
-    sizeExt = get_buffer_extension(1); sizeExt.obj  = sizeOut->data(); sizeExt.param = NULL;
-    
-    // Device buffer allocation
-    buffer_input     = new cl::Buffer(*m_context, 
-        CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,  
-            inbuf_size, &inExt);
-
-    buffer_output    = new cl::Buffer(*m_context, 
-            CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX, 
-            outbuf_size,&outExt);
-
-    buffer_size      = new cl::Buffer(*m_context, 
-            CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX, 
-            sizeof(uint32_t) , &sizeExt);
-    auto dw_s = std::chrono::high_resolution_clock::now(); 
-    
-    
-    size_for_each_unit =  size_of_each_unit_4k;
-    if (size_for_each_unit > input_size){
-        size_for_each_unit = input_size;
-    }
-    
     // Set kernel arguments
-    int narg = 0;
-    (kernel_gzip)->setArg(narg++, *(buffer_input));
-    (kernel_gzip)->setArg(narg++, *(buffer_output));
-    (kernel_gzip)->setArg(narg++, *(buffer_size));
-    (kernel_gzip)->setArg(narg++, size_for_each_unit);
-    std::vector<cl::Memory> inBufVec;
-    inBufVec.push_back(*(buffer_input));
-
-    // Migrate memory - Map host to device buffers   
-    m_q->enqueueMigrateMemObjects(inBufVec,0/* 0 means from host*/);
-    m_q->finish();
-    
-    auto kernel_start = std::chrono::high_resolution_clock::now(); 
+    inaccel::request request{"com.xilinx.applications.GZip.compress"};
+    request.arg(in).arg(out).arg(sizeOut).arg(size_for_each_unit);
     
     // Kernel invocation
-    m_q->enqueueTask(*kernel_gzip);
-    m_q->finish();
-    auto kernel_end = std::chrono::high_resolution_clock::now();    
-    
-    // Migrate memory - Map device to host buffers
-    m_q->enqueueReadBuffer((*buffer_size), CL_TRUE, 0, sizeof(uint32_t), 
-                            sizeOut->data(), nullptr, nullptr);
-    m_q->enqueueReadBuffer((*buffer_output), CL_TRUE, 0, sizeof(uint8_t) * sizeOut->data()[0], 
-                            local_out->data(), nullptr, nullptr);
-    m_q->finish();
-    
-    auto dr_end = std::chrono::high_resolution_clock::now();    
-    uint32_t out_cntr = (sizeOut->data())[0];
-    std::memcpy(&out[0],local_out->data(),out_cntr);
-    auto mcpy_end = std::chrono::high_resolution_clock::now();    
+    inaccel::wait(inaccel::submit(request));
 
-    auto left_over_end = std::chrono::high_resolution_clock::now();    
+    uint32_t out_cntr = (sizeOut.data())[0];
 
-    delete (buffer_input);
-    delete (buffer_output);
-    delete (buffer_size);
-    
     auto total_end = std::chrono::high_resolution_clock::now(); 
 
-    auto alloc_time = std::chrono::duration<double, std::nano>(alloc_end- total_start);
-    auto buffer_create_time = std::chrono::duration<double, std::nano>(dw_s -alloc_end);
-    auto buffer_write_time = std::chrono::duration<double, std::nano>(kernel_start - dw_s);
-    auto kernel_time_ns_1 = std::chrono::duration<double, std::nano>(kernel_end - kernel_start);
-    auto buffer_read_time = std::chrono::duration<double, std::nano>(dr_end - kernel_end);
-    auto memcpy_time = std::chrono::duration<double, std::nano>(mcpy_end - dr_end );
-    auto leftover_time = std::chrono::duration<double, std::nano>(left_over_end - mcpy_end);
-    auto buffer_delete_time = std::chrono::duration<double, std::nano>(total_end - left_over_end);
     auto total_time_ns = std::chrono::duration<double, std::nano>(total_end - total_start);
-    auto accumulate_time = alloc_time + buffer_create_time + buffer_write_time + kernel_time_ns_1 + buffer_read_time + memcpy_time + leftover_time + buffer_delete_time;
-#if 0
-    float alloc_througput   = (float)input_size * 1000 / alloc_time.count();
-    float buffer_througput  = (float)input_size * 1000 / buffer_create_time.count();
-    float buffer_write      = (float)input_size * 1000 / buffer_write_time.count();
-    float kernel            = (float)input_size * 1000 / kernel_time_ns_1.count();
-    float buffer_read       = (float)input_size * 1000 / buffer_read_time.count();
-    float memcpy_throughput = (float)input_size * 1000 / memcpy_time.count();
-    float leftover          = (float)input_size * 1000 / leftover_time.count();
-    float buffer_delete     = (float)input_size * 1000 / buffer_delete_time.count();
-    float total             = (float)input_size * 1000 / total_time_ns.count();
-    float accumulate        = (float)input_size * 1000 / accumulate_time.count();
-    std::cout 
-        << "allocation="   << alloc_througput
-        << "buffer_create="   << buffer_througput
-        << " buffer_write="         << buffer_write
-        << " kernel="               << kernel
-        << " buffer_read="          << buffer_read
-        << " memcpy="               << memcpy_throughput
-        << " leftover="             << leftover 
-        << " buffer_delete="        << buffer_delete
-        << " accumulate="           << accumulate 
-        << " total="                << total 
-        << std::endl; 
-#endif
-    float throughput_in_mbps_1 = (float)input_size * 1000 / kernel_time_ns_1.count();
-    //float total_in_mbps = (float)input_size * 1000 / total_time_ns.count();
-    //printf("%.2f",total_in_mbps);
-    //printf("%.2f",throughput_in_mbps_1 );
+    float throughput_in_mbps_1 = (float)input_size * 1000 / total_time_ns.count();
     std::cout << std::fixed << std::setprecision(2) << throughput_in_mbps_1;
     return out_cntr;
 }

@@ -2,9 +2,7 @@
 
 COMMON_REPO := ./
 #Common Includes
-include $(COMMON_REPO)/utility/boards.mk
-include $(COMMON_REPO)/libs/xcl2/xcl2.mk
-include $(COMMON_REPO)/libs/opencl/opencl.mk
+#include $(COMMON_REPO)/utility/boards.mk
 include $(COMMON_REPO)/libs/cmdparser/cmdparser.mk
 include $(COMMON_REPO)/libs/logger/logger.mk
 
@@ -13,15 +11,14 @@ HOST_NAME:=xil_gzip
 XO_NAME:=gZip_cu1
 XCLBIN_NAME:=gZip_app
 # Host Application
-$(HOST_NAME)_SRCS=./src/host.cpp $(oclHelper_SRCS) $(xcl2_SRCS) $(cmdparser_SRCS) $(logger_SRCS)
+$(HOST_NAME)_SRCS=./src/host.cpp $(cmdparser_SRCS) $(logger_SRCS)
 $(HOST_NAME)_SRCS+=./src/xil_gzip.cpp
-$(HOST_NAME)_HDRS+=$(xcl2_HDRS) $(cmdparser_HDRS) $(logger_HDRS) 
+$(HOST_NAME)_HDRS+=$(cmdparser_HDRS) $(logger_HDRS) 
 $(HOST_NAME)_HDRS+=./src/xil_gzip_config.h 
 $(HOST_NAME)_HDRS+=./src/xil_gzip.h
-$(HOST_NAME)_CXXFLAGS=-I./src/ $(logger_CXXFLAGS) $(cmdparser_CXXFLAGS) $(xcl2_CXXFLAGS) $(opencl_CXXFLAGS) $(oclHelper_CXXFLAGS) 
+$(HOST_NAME)_CXXFLAGS=-O3 -I./src/ $(cmdparser_CXXFLAGS) $(logger_CXXFLAGS)
 $(HOST_NAME)_CXXFLAGS+= -DCOMPUTE_UNITS=$(COMPUTE_UNITS) 
-$(HOST_NAME)_LDFLAGS=$(opencl_LDFLAGS) 
-$(HOST_NAME)_LDFLAGS+=-lrt 
+$(HOST_NAME)_LDFLAGS+=-lcoral-api 
 $(HOST_NAME)_LDFLAGS+=-Wno-unused-label 
 $(HOST_NAME)_LDFLAGS+=-std=c++0x
 $(HOST_NAME)_LDFLAGS+=-DVEC_8

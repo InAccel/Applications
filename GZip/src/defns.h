@@ -39,6 +39,7 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string>
 #include <fstream>
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <stdbool.h>
@@ -48,6 +49,6 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <vector>
 #include "xil_gzip_config.h"
 #include <sys/stat.h>
-#include "xcl2.hpp"
+#include <inaccel/coral>
 #include <iomanip>
 #endif
