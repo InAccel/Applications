@@ -225,7 +225,7 @@ void xil_gzip::compress(std::vector<inaccel::vector<uint8_t>> & in,
 
     inaccel::vector<uint32_t> sizeOut[total_file_count];
 
-    std::vector<inaccel::session> sessions;
+    std::vector<std::future<void>> responses;
 
     // Main loop for overlap computation
     for(int file = 0; file < total_file_count; file++) {
@@ -239,12 +239,12 @@ void xil_gzip::compress(std::vector<inaccel::vector<uint8_t>> & in,
         request.arg(in[file]).arg(out[file]).arg(sizeOut[file]).arg(insize);
         
         // Kernel invocation
-        sessions.push_back(inaccel::submit(request));
+        responses.push_back(inaccel::submit(request));
 
     } // End of mail loop - Batch mode
 
     for(int file = 0; file < total_file_count; file++) {
-        inaccel::wait(sessions[file]);
+        responses[file].get();
         size_t out_cntr = (sizeOut[file].data())[0];
         file_encode_bytes[file] = out_cntr;
     }
@@ -283,7 +283,7 @@ uint32_t xil_gzip::compress(inaccel::vector<uint8_t> & in,
     request.arg(in).arg(out).arg(sizeOut).arg(size_for_each_unit);
     
     // Kernel invocation
-    inaccel::wait(inaccel::submit(request));
+    inaccel::submit(request).get();
 
     uint32_t out_cntr = (sizeOut.data())[0];
 
